@@ -1,10 +1,7 @@
 import os
 import random
 import asyncio
-import ssl
 from datetime import datetime, timezone
-
-import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -86,18 +83,7 @@ async def cmd_pulse(message: types.Message):
 
 # --- ЗАПУСК ---
 async def main():
-    # 1. Создаем SSL-контекст и коннектор ВНУТРИ асинхронного loop
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
-
-    # 2. Создаем AiohttpSession
     session = AiohttpSession(api=API_BASE_URL)
-    # 3. Подменяем internal _connector сессии на наш коннектор
-    #    чтобы aiogram использовал именно его
-    session._connector = connector
-
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
 
