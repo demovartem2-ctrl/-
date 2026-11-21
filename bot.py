@@ -4,23 +4,7 @@ import asyncio
 import ssl
 from datetime import datetime, timezone
 
-# --- ХАК ДЛЯ ОТКЛЮЧЕНИЯ ПРОВЕРКИ SSL (ГЛОБАЛЬНО) ---
 import aiohttp
-
-_ssl_context = ssl.create_default_context()
-_ssl_context.check_hostname = False
-_ssl_context.verify_mode = ssl.CERT_NONE
-_connector = aiohttp.TCPConnector(ssl=_ssl_context)
-
-_original_session = aiohttp.ClientSession
-
-def _patched_session(*args, **kwargs):
-    kwargs['connector'] = _connector
-    return _original_session(*args, **kwargs)
-
-aiohttp.ClientSession = _patched_session
-# ----------------------------------------------------
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -102,11 +86,21 @@ async def cmd_pulse(message: types.Message):
 
 # --- ЗАПУСК ---
 async def main():
-    # Создаем обычную сессию. Патч сверху уже применил SSL-настройки.
+    # 1. Создаем SSL-контекст и коннектор ВНУТРИ асинхронного loop
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+
+    # 2. Создаем AiohttpSession
     session = AiohttpSession(api=API_BASE_URL)
+    # 3. Подменяем internal _connector сессии на наш коннектор
+    #    чтобы aiogram использовал именно его
+    session._connector = connector
+
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
-    
+
     dp.message.register(cmd_start, CommandStart())
     dp.message.register(cmd_pulse, Command("pulse"))
 
@@ -115,7 +109,7 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         pass
-    
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
