@@ -3,7 +3,24 @@ import random
 import asyncio
 import ssl
 from datetime import datetime, timezone
+
+# --- ХАК ДЛЯ ОТКЛЮЧЕНИЯ ПРОВЕРКИ SSL (ГЛОБАЛЬНО) ---
 import aiohttp
+
+_ssl_context = ssl.create_default_context()
+_ssl_context.check_hostname = False
+_ssl_context.verify_mode = ssl.CERT_NONE
+_connector = aiohttp.TCPConnector(ssl=_ssl_context)
+
+_original_session = aiohttp.ClientSession
+
+def _patched_session(*args, **kwargs):
+    kwargs['connector'] = _connector
+    return _original_session(*args, **kwargs)
+
+aiohttp.ClientSession = _patched_session
+# ----------------------------------------------------
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -83,23 +100,10 @@ async def cmd_pulse(message: types.Message):
         f"Напиши {ADMIN_USERNAME} для её выдачи."
     )
 
-# --- ХАК ДЛЯ ОТКЛЮЧЕНИЯ SSL В AIOGRAM 3.x ---
-class CustomAiohttpSession(AiohttpSession):
-    def __init__(self, *args, **kwargs):
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        # Создаем сессию aiohttp вручную и подсовываем её
-        self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context))
-        super().__init__(*args, **kwargs)
-    
-    async def close(self):
-        await self._session.close()
-
 # --- ЗАПУСК ---
 async def main():
-    # Используем наш кастомный класс сессии
-    session = CustomAiohttpSession(api=API_BASE_URL)
+    # Создаем обычную сессию. Патч сверху уже применил SSL-настройки.
+    session = AiohttpSession(api=API_BASE_URL)
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     
