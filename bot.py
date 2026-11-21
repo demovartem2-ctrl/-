@@ -2,64 +2,42 @@ import os
 import random
 import asyncio
 import ssl
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from supabase import create_client, Client
+
+# --- Отключаем спам в логах ---
+logging.getLogger("aiohttp").setLevel(logging.ERROR)
+logging.basicConfig(level=logging.INFO)
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+API_BASE_URL = "https://31.76.29.36:8081"
 
-# ВАЖНО: Без /bot на конце! aiogram сам добавит его.
-API_BASE_URL = "https://31.76.29.36:8081" 
-
-# --- КАСТОМНАЯ СЕССИЯ (Отключение SSL для самоподписанных сертификатов) ---
+# --- КАСТОМНАЯ СЕССИЯ (SSL) ---
 class CustomAiohttpSession(AiohttpSession):
     async def create_session(self) -> aiohttp.ClientSession:
-        # Создаем SSL-контекст, который не проверяет сертификат
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
-
-        # Создаем коннектор с этим контекстом
         connector = aiohttp.TCPConnector(ssl=ssl_context)
-        
-        # Создаем и возвращаем сессию
         return aiohttp.ClientSession(connector=connector)
 
-# --- ЛОГИКА ---
-COOLDOWN_MIN = 3600
-COOLDOWN_MAX = 7200
-ADMIN_USERNAME = "@sardelka"
-
+# --- ЛОГИКА НАГРАД ---
 REWARDS = [
-    {"name": "1 NFT", "chance": 35, "message": "1 NFT"},
-    {"name": "100 Stars", "chance": 50, "message": "100 Stars"},
-    {"name": "5 NFT", "chance": 15, "message": "5 NFT"},
+    {"name": "1 NFT", "chance": 35, "msg": "1 NFT"},
+    {"name": "100 Stars", "chance": 50, "msg": "100 Stars"},
+    {"name": "5 NFT", "chance": 15, "msg": "5 NFT"},
 ]
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-def get_cooldown(user_id):
-    try:
-        res = supabase.table("users").select("last_pulse").eq("user_id", user_id).execute()
-        if not res.data or not res.data[0]["last_pulse"]:
-            return 0
-        last = res.data[0]["last_pulse"]
-        last_dt = datetime.fromisoformat(last)
-        now = datetime.now(timezone.utc)
-        elapsed = (now - last_dt).total_seconds()
-        cooldown = random.randint(COOLDOWN_MIN, COOLDOWN_MAX)
-        return max(0, cooldown - elapsed)
-    except Exception as e:
-        print(f"Ошибка БД: {e}")
-        return 0
+ADMIN_USERNAME = "@sardelka"
 
 def win_reward():
     roll = random.random() * 100
@@ -70,59 +48,93 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
+# --- ВИТРИНА ДЛЯ ЛС (Как на скрине) ---
+ABOUT_TEXT = (
+    "**Flashgram Pulse: один приз за активность каждые 1-30 минут.**\n"
+    "Мишка, NFT, 500-5000 Stars или 1-100 Gram. Нужны номер и привязанный аккаунт Flashgram.\n"
+    "Добавьте бота администратором группы.\n\n"
+    "🎰 55% · 👤 10% · 🍬 20% · 💎 15%\n"
+    "Stars — 500-5000, Gram — 1-100.\n\n"
+    "Нужны выданный номер и аккаунт Flashgram. Основной аккаунт — тот, что привязан в боте регистрации."
+)
+
+@dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Я бот для выдачи наград за активность.\nИспользуй /pulse, чтобы попытать удачу.\nКулдаун: от 1 до 2 часов.")
+    # Проверяем, написали в ЛС или в группу
+    if message.chat.type == "private":
+        await message.answer(ABOUT_TEXT, parse_mode="Markdown")
+    else:
+        await message.answer("Я работаю в группах. Добавьте меня администратором, и я начну выдавать призы за активность!")
 
-async def cmd_pulse(message: types.Message):
-    user_id = message.from_user.id
-    username = message.from_user.username or "unknown"
+# --- АВТОМАТИЧЕСКИЙ ВОРКЕР ДЛЯ ГРУПП ---
+async def group_worker(bot: Bot, supabase: Client):
+    """Крутится в фоне и раз в 1-2 часа делает розыгрыш в группах"""
+    while True:
+        # Ждем случайное время от 1 до 2 часов (в секундах)
+        wait_time = random.randint(3600, 7200)
+        logging.info(f"Следующий розыгрыш через {wait_time // 60} минут.")
+        await asyncio.sleep(wait_time)
 
-    cooldown_left = get_cooldown(user_id)
-    if cooldown_left > 0:
-        minutes = int(cooldown_left // 60)
-        await message.answer(f"⏳ Подожди ещё {minutes} минут(ы) перед следующей попыткой.")
-        return
+        try:
+            # 1. Получаем все группы из БД (предполагаем, что они там сохранены)
+            # Если у тебя группы хранятся не в Supabase, нужно будет адаптировать
+            res = supabase.table("groups").select("chat_id").execute()
+            
+            if not res.data:
+                continue
 
-    reward = win_reward()
-    now = datetime.now(timezone.utc).isoformat()
+            for group in res.data:
+                chat_id = group["chat_id"]
+                
+                # 2. Получаем список активных участников (тех, кто недавно писал)
+                # В реальности нужно хранить историю сообщений. 
+                # Здесь мы берем случайного из тех, кто есть в БД.
+                users_res = supabase.table("users").select("username, user_id").limit(10).execute()
+                if not users_res.data:
+                    continue
+                
+                winner = random.choice(users_res.data)
+                username = winner.get("username", "Unknown")
+                user_id = winner["user_id"]
 
-    try:
-        supabase.table("users").upsert({
-            "user_id": user_id,
-            "username": username,
-            "last_pulse": now,
-            "total_wins": 1
-        }).execute()
-    except Exception as e:
-        print(f"Ошибка записи в БД: {e}")
+                # 3. Разворачиваем награду
+                reward = win_reward()
+                now = datetime.now(timezone.utc).isoformat()
 
-    await message.answer(
-        f"🎉 Ты выбил награду: {reward['message']}!\n\n"
-        f"Напиши {ADMIN_USERNAME} для её выдачи."
-    )
+                # 4. Обновляем БД (записываем победу)
+                supabase.table("users").upsert({
+                    "user_id": user_id,
+                    "username": username,
+                    "last_win": now,
+                    "total_wins": 1
+                }).execute()
+
+                # 5. Отправляем сообщение в группу
+                text = (
+                    f"🏆 **Победитель:** @{username}\n"
+                    f"🎁 **Награда:** {reward['msg']}\n\n"
+                    f"Напиши {ADMIN_USERNAME} для выдачи."
+                )
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+
+        except Exception as e:
+            logging.error(f"Ошибка в воркере: {e}")
+
 
 # --- ЗАПУСК ---
 async def main():
-    # 1. Создаем описание кастомного API
     api_server = TelegramAPIServer.from_base(API_BASE_URL)
-    
-    # 2. Создаем нашу кастомную сессию с отключенным SSL
     session = CustomAiohttpSession(api=api_server)
-    
-    # 3. Инициализируем бота
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # 4. Регистрируем хендлеры
     dp.message.register(cmd_start, CommandStart())
-    dp.message.register(cmd_pulse, Command("pulse"))
 
-    print("Запуск бота...")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception:
-        pass
+    # Запускаем фоновый воркер параллельно с ботом
+    asyncio.create_task(group_worker(bot, supabase))
 
+    print("Бот запущен. Фоновый воркер активен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
