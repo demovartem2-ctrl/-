@@ -3,11 +3,11 @@ import random
 import asyncio
 import ssl
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from supabase import create_client, Client
@@ -31,7 +31,7 @@ class CustomAiohttpSession(AiohttpSession):
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         return aiohttp.ClientSession(connector=connector)
 
-# --- ЛОГИКА НАГРАД (ТОЛЬКО 3) ---
+# --- ЛОГИКА НАГРАД ---
 REWARDS = [
     {"name": "1 NFT", "chance": 35, "msg": "1 NFT"},
     {"name": "100 Stars", "chance": 50, "msg": "100 Stars"},
@@ -48,7 +48,7 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
-# --- ТЕКСТ В ЛС (КАК НА СКРИНЕ, НО С ТВОИМИ УСЛОВИЯМИ) ---
+# --- ТЕКСТ В ЛС ---
 ABOUT_TEXT = (
     "**Flashgram Pulse: один приз за активность.**\n"
     "Мишка, NFT или Stars. Нужны номер и привязанный аккаунт Flashgram.\n"
@@ -61,53 +61,59 @@ ABOUT_TEXT = (
 # --- ФУНКЦИИ ---
 async def cmd_start(message: types.Message):
     if message.chat.type == "private":
-        # Отправляем текст без кнопок, как ты просил
         await message.answer(ABOUT_TEXT, parse_mode="Markdown")
     else:
-        # Если добавили в группу — короткое приветствие
-        await message.answer("Я работаю в группах. Добавьте меня администратором, и я начну выдавать призы за активность!")
+        await message.answer("Добавьте меня администратором, и я начну выдавать призы за активность! Пишите /pulse, чтобы испытать удачу.")
 
-async def group_worker(bot: Bot, supabase: Client):
-    while True:
-        # Кулдаун 1-2 часа (3600-7200 секунд)
-        wait_time = random.randint(3600, 7200)
-        logging.info(f"Следующий розыгрыш через {wait_time // 60} минут.")
-        await asyncio.sleep(wait_time)
+async def cmd_pulse(message: types.Message, bot: Bot, supabase: Client):
+    user_id = message.from_user.id
+    username = message.from_user.username or "Unknown"
+    
+    # 1. Проверяем, есть ли пользователь в базе и когда последний раз пульсировал
+    try:
+        res = supabase.table("users").select("last_pulse").eq("user_id", user_id).execute()
+        
+        # Если запись есть, проверяем время
+        if res.data and res.data[0].get("last_pulse"):
+            last_pulse = datetime.fromisoformat(res.data[0]["last_pulse"])
+            now = datetime.now(timezone.utc)
+            elapsed = (now - last_pulse).total_seconds()
+            
+            # Кулдаун от 1 до 2 часов
+            cooldown = random.randint(3600, 7200)
+            
+            if elapsed < cooldown:
+                remaining = int((cooldown - elapsed) // 60)
+                await message.reply(f"⏳ Подожди ещё {remaining} минут(ы) перед следующей попыткой.")
+                return
+    except Exception as e:
+        logging.error(f"Ошибка БД при проверке: {e}")
 
-        try:
-            res = supabase.table("groups").select("chat_id").execute()
-            if not res.data:
-                continue
+    # 2. Разворачиваем награду
+    reward = win_reward()
+    now = datetime.now(timezone.utc).isoformat()
 
-            for group in res.data:
-                chat_id = group["chat_id"]
-                users_res = supabase.table("users").select("username, user_id").limit(10).execute()
-                if not users_res.data:
-                    continue
-                
-                winner = random.choice(users_res.data)
-                username = winner.get("username", "Unknown")
-                user_id = winner["user_id"]
+    # 3. Обновляем БД (записываем время пульса и победу)
+    try:
+        supabase.table("users").upsert({
+            "user_id": user_id,
+            "username": username,
+            "last_pulse": now,
+            "total_wins": 1
+        }).execute()
+    except Exception as e:
+        logging.error(f"Ошибка записи в БД: {e}")
 
-                reward = win_reward()
-                now = datetime.now(timezone.utc).isoformat()
-
-                supabase.table("users").upsert({
-                    "user_id": user_id,
-                    "username": username,
-                    "last_win": now,
-                    "total_wins": 1
-                }).execute()
-
-                text = (
-                    f"🏆 **Победитель:** @{username}\n"
-                    f"🎁 **Награда:** {reward['msg']}\n\n"
-                    f"Напиши {ADMIN_USERNAME} для выдачи."
-                )
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-
-        except Exception as e:
-            logging.error(f"Ошибка в воркере: {e}")
+    # 4. Отправляем ответ в чат (похожий на скрин)
+    text = (
+        f"🎰 **Flashgram Pulse**\n"
+        f"🎰 35% · ⭐ 50% · 💎 15%\n"
+        f"**Один приз активному участнику.**\n\n"
+        f"🏆 Победитель: **@{username}**\n"
+        f"🎁 Награда: **{reward['msg']}**\n\n"
+        f"Напиши {ADMIN_USERNAME} для выдачи."
+    )
+    await message.reply(text, parse_mode="Markdown")
 
 # --- ЗАПУСК ---
 async def main():
@@ -117,8 +123,10 @@ async def main():
     dp = Dispatcher()
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+    # Регистрируем команды
     dp.message.register(cmd_start, CommandStart())
-    asyncio.create_task(group_worker(bot, supabase))
+    # Передаем bot и supabase как аргументы в хендлер
+    dp.message.register(cmd_pulse, Command("pulse"), bot=bot, supabase=supabase)
 
     logging.info("Бот запущен.")
     await dp.start_polling(bot)
