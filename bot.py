@@ -1,17 +1,37 @@
 import os
 import random
 import asyncio
+import ssl
 from datetime import datetime, timezone
+
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from supabase import create_client, Client
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://31.76.29.36:8081/bot")
+
+# ВАЖНО: Без /bot на конце! aiogram сам добавит его.
+API_BASE_URL = "https://31.76.29.36:8081" 
+
+# --- КАСТОМНАЯ СЕССИЯ (Отключение SSL для самоподписанных сертификатов) ---
+class CustomAiohttpSession(AiohttpSession):
+    async def create_session(self) -> aiohttp.ClientSession:
+        # Создаем SSL-контекст, который не проверяет сертификат
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        # Создаем коннектор с этим контекстом
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        
+        # Создаем и возвращаем сессию
+        return aiohttp.ClientSession(connector=connector)
 
 # --- ЛОГИКА ---
 COOLDOWN_MIN = 3600
@@ -83,10 +103,17 @@ async def cmd_pulse(message: types.Message):
 
 # --- ЗАПУСК ---
 async def main():
-    session = AiohttpSession(api=API_BASE_URL)
+    # 1. Создаем описание кастомного API
+    api_server = TelegramAPIServer.from_base(API_BASE_URL)
+    
+    # 2. Создаем нашу кастомную сессию с отключенным SSL
+    session = CustomAiohttpSession(api=api_server)
+    
+    # 3. Инициализируем бота
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
 
+    # 4. Регистрируем хендлеры
     dp.message.register(cmd_start, CommandStart())
     dp.message.register(cmd_pulse, Command("pulse"))
 
