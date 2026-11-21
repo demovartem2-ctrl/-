@@ -10,28 +10,10 @@ from aiohttp import TCPConnector
 from supabase import create_client, Client
 
 # --- НАСТРОЙКИ ---
-# ВСТАВЬ СВОЙ ТОКЕН СЮДА ВРУЧНУЮ:
-BOT_TOKEN = "354:3YibVbSxoEelu7cQZzeoaXRs4S44jAAXTg2"
-
-# Твои ключи Supabase
-SUPABASE_URL = "https://твой-проект.supabase.co"
-SUPABASE_KEY = "твой_secret_ключ"
-
-# Твой кастомный API сервер
-API_BASE_URL = "https://31.76.29.36:8081/bot"
-
-# --- ИНИЦИАЛИЗАЦИЯ ---
-# Отключаем проверку SSL, если у сервера самоподписанный сертификат
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-connector = TCPConnector(ssl=ssl_context)
-
-# Указываем aiogram использовать твой API
-session = AiohttpSession(api=API_BASE_URL, connector=connector)
-bot = Bot(token=BOT_TOKEN, session=session)
-dp = Dispatcher()
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://31.76.29.36:8081/bot")
 
 # --- ЛОГИКА ---
 COOLDOWN_MIN = 3600
@@ -43,6 +25,9 @@ REWARDS = [
     {"name": "100 Stars", "chance": 50, "message": "100 Stars"},
     {"name": "5 NFT", "chance": 15, "message": "5 NFT"},
 ]
+
+# Supabase клиент инициализируем здесь (это безопасно)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_cooldown(user_id):
     try:
@@ -68,11 +53,10 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
-@dp.message(CommandStart())
+# --- ХЕНДЛЕРЫ (пока без dp, регистрируем их внутри main) ---
 async def cmd_start(message: types.Message):
     await message.answer("Привет! Я бот для выдачи наград за активность.\nИспользуй /pulse, чтобы попытать удачу.\nКулдаун: от 1 до 2 часов.")
 
-@dp.message(Command("pulse"))
 async def cmd_pulse(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "unknown"
@@ -101,15 +85,30 @@ async def cmd_pulse(message: types.Message):
         f"Напиши {ADMIN_USERNAME} для её выдачи."
     )
 
-# --- ЗАПУСК (POLLING) ---
+# --- ЗАПУСК ---
 async def main():
+    # Создаем SSL контекст и коннектор внутри работающего event loop
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    connector = TCPConnector(ssl=ssl_context)
+    
+    # Создаем сессию и бота
+    session = AiohttpSession(api=API_BASE_URL, connector=connector)
+    bot = Bot(token=BOT_TOKEN, session=session)
+    dp = Dispatcher()
+    
+    # Регистрируем хендлеры
+    dp.message.register(cmd_start, CommandStart())
+    dp.message.register(cmd_pulse, Command("pulse"))
+
     print("Запуск бота в режиме Polling...")
-    # Удаляем вебхук, чтобы бот не пытался стучаться на старый адрес
     try:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         pass
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
