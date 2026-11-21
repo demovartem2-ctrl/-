@@ -3,7 +3,7 @@ import random
 import asyncio
 import ssl
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types
@@ -21,6 +21,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 API_BASE_URL = "https://31.76.29.36:8081"
+
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+# Создаем клиент Supabase глобально, чтобы хендлеры его видели
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- КАСТОМНАЯ СЕССИЯ (SSL) ---
 class CustomAiohttpSession(AiohttpSession):
@@ -65,21 +69,17 @@ async def cmd_start(message: types.Message):
     else:
         await message.answer("Добавьте меня администратором, и я начну выдавать призы за активность! Пишите /pulse, чтобы испытать удачу.")
 
-async def cmd_pulse(message: types.Message, bot: Bot, supabase: Client):
+async def cmd_pulse(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     
-    # 1. Проверяем, есть ли пользователь в базе и когда последний раз пульсировал
     try:
         res = supabase.table("users").select("last_pulse").eq("user_id", user_id).execute()
         
-        # Если запись есть, проверяем время
         if res.data and res.data[0].get("last_pulse"):
             last_pulse = datetime.fromisoformat(res.data[0]["last_pulse"])
             now = datetime.now(timezone.utc)
             elapsed = (now - last_pulse).total_seconds()
-            
-            # Кулдаун от 1 до 2 часов
             cooldown = random.randint(3600, 7200)
             
             if elapsed < cooldown:
@@ -89,11 +89,9 @@ async def cmd_pulse(message: types.Message, bot: Bot, supabase: Client):
     except Exception as e:
         logging.error(f"Ошибка БД при проверке: {e}")
 
-    # 2. Разворачиваем награду
     reward = win_reward()
     now = datetime.now(timezone.utc).isoformat()
 
-    # 3. Обновляем БД (записываем время пульса и победу)
     try:
         supabase.table("users").upsert({
             "user_id": user_id,
@@ -104,7 +102,6 @@ async def cmd_pulse(message: types.Message, bot: Bot, supabase: Client):
     except Exception as e:
         logging.error(f"Ошибка записи в БД: {e}")
 
-    # 4. Отправляем ответ в чат (похожий на скрин)
     text = (
         f"🎰 **Flashgram Pulse**\n"
         f"🎰 35% · ⭐ 50% · 💎 15%\n"
@@ -121,12 +118,10 @@ async def main():
     session = CustomAiohttpSession(api=api_server)
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Регистрируем команды
+    # Регистрируем команды БЕЗ лишних аргументов
     dp.message.register(cmd_start, CommandStart())
-    # Передаем bot и supabase как аргументы в хендлер
-    dp.message.register(cmd_pulse, Command("pulse"), bot=bot, supabase=supabase)
+    dp.message.register(cmd_pulse, Command("pulse"))
 
     logging.info("Бот запущен.")
     await dp.start_polling(bot)
