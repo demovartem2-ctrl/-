@@ -3,7 +3,7 @@ import random
 import asyncio
 import ssl
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types
@@ -48,7 +48,6 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
-# --- ВИТРИНА ДЛЯ ЛС (Как на скрине) ---
 ABOUT_TEXT = (
     "**Flashgram Pulse: один приз за активность каждые 1-30 минут.**\n"
     "Мишка, NFT, 500-5000 Stars или 1-100 Gram. Нужны номер и привязанный аккаунт Flashgram.\n"
@@ -58,37 +57,26 @@ ABOUT_TEXT = (
     "Нужны выданный номер и аккаунт Flashgram. Основной аккаунт — тот, что привязан в боте регистрации."
 )
 
-@dp.message(CommandStart())
+# --- ФУНКЦИИ (БЕЗ ДЕКОРАТОРОВ!) ---
 async def cmd_start(message: types.Message):
-    # Проверяем, написали в ЛС или в группу
     if message.chat.type == "private":
         await message.answer(ABOUT_TEXT, parse_mode="Markdown")
     else:
         await message.answer("Я работаю в группах. Добавьте меня администратором, и я начну выдавать призы за активность!")
 
-# --- АВТОМАТИЧЕСКИЙ ВОРКЕР ДЛЯ ГРУПП ---
 async def group_worker(bot: Bot, supabase: Client):
-    """Крутится в фоне и раз в 1-2 часа делает розыгрыш в группах"""
     while True:
-        # Ждем случайное время от 1 до 2 часов (в секундах)
         wait_time = random.randint(3600, 7200)
         logging.info(f"Следующий розыгрыш через {wait_time // 60} минут.")
         await asyncio.sleep(wait_time)
 
         try:
-            # 1. Получаем все группы из БД (предполагаем, что они там сохранены)
-            # Если у тебя группы хранятся не в Supabase, нужно будет адаптировать
             res = supabase.table("groups").select("chat_id").execute()
-            
             if not res.data:
                 continue
 
             for group in res.data:
                 chat_id = group["chat_id"]
-                
-                # 2. Получаем список активных участников (тех, кто недавно писал)
-                # В реальности нужно хранить историю сообщений. 
-                # Здесь мы берем случайного из тех, кто есть в БД.
                 users_res = supabase.table("users").select("username, user_id").limit(10).execute()
                 if not users_res.data:
                     continue
@@ -97,11 +85,9 @@ async def group_worker(bot: Bot, supabase: Client):
                 username = winner.get("username", "Unknown")
                 user_id = winner["user_id"]
 
-                # 3. Разворачиваем награду
                 reward = win_reward()
                 now = datetime.now(timezone.utc).isoformat()
 
-                # 4. Обновляем БД (записываем победу)
                 supabase.table("users").upsert({
                     "user_id": user_id,
                     "username": username,
@@ -109,7 +95,6 @@ async def group_worker(bot: Bot, supabase: Client):
                     "total_wins": 1
                 }).execute()
 
-                # 5. Отправляем сообщение в группу
                 text = (
                     f"🏆 **Победитель:** @{username}\n"
                     f"🎁 **Награда:** {reward['msg']}\n\n"
@@ -120,7 +105,6 @@ async def group_worker(bot: Bot, supabase: Client):
         except Exception as e:
             logging.error(f"Ошибка в воркере: {e}")
 
-
 # --- ЗАПУСК ---
 async def main():
     api_server = TelegramAPIServer.from_base(API_BASE_URL)
@@ -129,12 +113,13 @@ async def main():
     dp = Dispatcher()
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+    # Регистрируем команду start здесь, где dp уже существует
     dp.message.register(cmd_start, CommandStart())
 
-    # Запускаем фоновый воркер параллельно с ботом
+    # Запускаем фоновую задачу
     asyncio.create_task(group_worker(bot, supabase))
 
-    print("Бот запущен. Фоновый воркер активен.")
+    logging.info("Бот запущен. Фоновый воркер активен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
