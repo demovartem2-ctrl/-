@@ -31,7 +31,7 @@ class CustomAiohttpSession(AiohttpSession):
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         return aiohttp.ClientSession(connector=connector)
 
-# --- ЛОГИКА НАГРАД ---
+# --- ЛОГИКА НАГРАД (ТОЛЬКО 3) ---
 REWARDS = [
     {"name": "1 NFT", "chance": 35, "msg": "1 NFT"},
     {"name": "100 Stars", "chance": 50, "msg": "100 Stars"},
@@ -48,24 +48,28 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
+# --- ТЕКСТ В ЛС (КАК НА СКРИНЕ, НО С ТВОИМИ УСЛОВИЯМИ) ---
 ABOUT_TEXT = (
-    "**Flashgram Pulse: один приз за активность каждые 1-30 минут.**\n"
-    "Мишка, NFT, 500-5000 Stars или 1-100 Gram. Нужны номер и привязанный аккаунт Flashgram.\n"
+    "**Flashgram Pulse: один приз за активность.**\n"
+    "Мишка, NFT или Stars. Нужны номер и привязанный аккаунт Flashgram.\n"
     "Добавьте бота администратором группы.\n\n"
-    "🎰 55% · 👤 10% · 🍬 20% · 💎 15%\n"
-    "Stars — 500-5000, Gram — 1-100.\n\n"
+    "🎰 35% · ⭐ 50% · 💎 15%\n"
+    "Награды: 1 NFT (35%), 100 Stars (50%), 5 NFT (15%).\n\n"
     "Нужны выданный номер и аккаунт Flashgram. Основной аккаунт — тот, что привязан в боте регистрации."
 )
 
-# --- ФУНКЦИИ (БЕЗ ДЕКОРАТОРОВ!) ---
+# --- ФУНКЦИИ ---
 async def cmd_start(message: types.Message):
     if message.chat.type == "private":
+        # Отправляем текст без кнопок, как ты просил
         await message.answer(ABOUT_TEXT, parse_mode="Markdown")
     else:
+        # Если добавили в группу — короткое приветствие
         await message.answer("Я работаю в группах. Добавьте меня администратором, и я начну выдавать призы за активность!")
 
 async def group_worker(bot: Bot, supabase: Client):
     while True:
+        # Кулдаун 1-2 часа (3600-7200 секунд)
         wait_time = random.randint(3600, 7200)
         logging.info(f"Следующий розыгрыш через {wait_time // 60} минут.")
         await asyncio.sleep(wait_time)
@@ -113,13 +117,10 @@ async def main():
     dp = Dispatcher()
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Регистрируем команду start здесь, где dp уже существует
     dp.message.register(cmd_start, CommandStart())
-
-    # Запускаем фоновую задачу
     asyncio.create_task(group_worker(bot, supabase))
 
-    logging.info("Бот запущен. Фоновый воркер активен.")
+    logging.info("Бот запущен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
