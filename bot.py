@@ -3,10 +3,10 @@ import random
 import asyncio
 import ssl
 from datetime import datetime, timezone
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import TCPConnector
 from supabase import create_client, Client
 
 # --- НАСТРОЙКИ ---
@@ -26,7 +26,6 @@ REWARDS = [
     {"name": "5 NFT", "chance": 15, "message": "5 NFT"},
 ]
 
-# Supabase клиент инициализируем здесь (это безопасно)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_cooldown(user_id):
@@ -53,7 +52,6 @@ def win_reward():
             return reward
     return REWARDS[-1]
 
-# --- ХЕНДЛЕРЫ (пока без dp, регистрируем их внутри main) ---
 async def cmd_start(message: types.Message):
     await message.answer("Привет! Я бот для выдачи наград за активность.\nИспользуй /pulse, чтобы попытать удачу.\nКулдаун: от 1 до 2 часов.")
 
@@ -85,24 +83,30 @@ async def cmd_pulse(message: types.Message):
         f"Напиши {ADMIN_USERNAME} для её выдачи."
     )
 
+# --- ХАК ДЛЯ ОТКЛЮЧЕНИЯ SSL В AIOGRAM 3.x ---
+class CustomAiohttpSession(AiohttpSession):
+    def __init__(self, *args, **kwargs):
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        # Создаем сессию aiohttp вручную и подсовываем её
+        self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context))
+        super().__init__(*args, **kwargs)
+    
+    async def close(self):
+        await self._session.close()
+
 # --- ЗАПУСК ---
 async def main():
-    # Создаем SSL контекст и коннектор внутри работающего event loop
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    connector = TCPConnector(ssl=ssl_context)
-    
-    # Создаем сессию и бота
-    session = AiohttpSession(api=API_BASE_URL, connector=connector)
+    # Используем наш кастомный класс сессии
+    session = CustomAiohttpSession(api=API_BASE_URL)
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     
-    # Регистрируем хендлеры
     dp.message.register(cmd_start, CommandStart())
     dp.message.register(cmd_pulse, Command("pulse"))
 
-    print("Запуск бота в режиме Polling...")
+    print("Запуск бота...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception:
